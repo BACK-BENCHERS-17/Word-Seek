@@ -21,12 +21,12 @@ from flask import Flask, jsonify
 # ==========================
 # 📝 CONFIG — Using String Session (no phone login needed)
 # ==========================
-API_ID = 29857524
-API_HASH = "4abcbcce5e250177b7fd7bc59f7ed5cc"
+API_ID = 16996248
+API_HASH = "00505c7ecb5d84fc463e7e1839d40fb4"
 
 # 🔑 Your saved session string
 SESSION_STRING = (
-    "1BVtsOJ4Bu3pkAQEtVYO65Y_Es8AYwhbAJcM4PVkbiU2bqUrU7iG5mm1XltFAQFPOTnh18JpGKaVp18Xz5XHKZ5_ETHXe3_JZwsjOu-FDMLDEM69qZ20OrblV6Jyd9E3_ikBC6KNghhjFNDrwfHrh2oCDNuumgvdEkt0fenP0kkg6VEZiubaEtSTdwuIcNnvHYbj1ATKkM7JYBRQxlsEfeUnoccko3-MmTEGEzt1tykbh3kRajbDyC0iLa5KFolBoVXjPH5Rb8aXQBKQYMQyoBc0x7oBNLozKz-J0ccWbGlnLmTjXxxEXfWEt7P4CFBt2owzKkioc4Rp_AXsS2QeK3GbmSatb0eY="
+    "1BVtsOGsBu0qqzvUXT3CQuKjVSyDPMo_r9Q0cONBRhoTFKrNyiYtfNahv0aas9Hl6Co5_YhdKucMHYYa0CnU1G2AeRI9YtQxp-uWuT2cJHzMY25iSEEr-_W1zsKe-9uNeALhc9eL_eZGa5neqcaBTj0l3H6_TZcMZxJYHUj2XhGczArAlPtnEUCwlr-W9nEh_rGAOIcREljYtVA0EAteUz7FTn64fcUC39qRLDSwsFZpocGF9m4ZSzKtEczxe6ES1bBWVW0iibgPqG5G2bdDPVFVRj-s9Vph6ers2h4fvclePGIxuu26wtzlTIU3cCVmpHNcpcpVaJJadQSnc3b2LZLjskv2MKdg="
 )
 
 # Create Telegram client using string session
