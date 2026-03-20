@@ -1,0 +1,6 @@
+telethon
+flask
+requests
+pymongo
+dnspython
+certifi
