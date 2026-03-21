@@ -17,9 +17,13 @@ from pymongo import MongoClient
 import dns.resolver
 import certifi
 
-# Fix for Termux/Android DNS
-dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
-dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
+# Fix for Termux/Android DNS (only if in Termux)
+if os.path.exists('/data/data/com.termux'):
+    try:
+        dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
+        dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
+    except Exception as e:
+        print(f"⚠️ DNS fix failed: {e}")
 
 # ==========================
 # 📝 CONFIG
@@ -493,7 +497,4 @@ async def h_game(e, phone):
                     if key not in s.processed: s.solver.process(word, p); s.processed.add(key); new_info = True
 
         if is_game_over:
-            s.done += 1; s.last_action = time.time()
-            if s.done < s.target:
-                await asyncio.sleep(3)
-                if s.active: await e.clie
+          
