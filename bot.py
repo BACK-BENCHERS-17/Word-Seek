@@ -65,11 +65,11 @@ def get_saved_sessions():
         with open(SESSION_FILE, "r") as f: return json.load(f)
     return {}
 
-def save_session(phone, session_string, mode="TURBO"):
-    try: sessions_col.update_one({"phone": phone}, {"$set": {"string": session_string, "mode": mode}}, upsert=True)
+def save_session(phone, session_string, mode="TURBO", enabled=True):
+    try: sessions_col.update_one({"phone": phone}, {"$set": {"string": session_string, "mode": mode, "enabled": enabled}}, upsert=True)
     except: pass
     data = get_saved_sessions()
-    data[phone] = {"phone": phone, "string": session_string, "mode": mode}
+    data[phone] = {"phone": phone, "string": session_string, "mode": mode, "enabled": enabled}
     with open(SESSION_FILE, "w") as f: json.dump(data, f)
 
 def delete_session(phone):
@@ -120,16 +120,31 @@ class Solver:
         self.count += 1
         if pattern == "G" * self.length: return
         if guess in self.candidates: self.candidates.remove(guess)
+
+        counts = Counter()
         for i, (p, c) in enumerate(zip(pattern, guess)):
-            if p == "G": self.fixed[i] = c; self.known.add(c)
-            elif p == "Y": 
-                if i not in self.forbidden: self.forbidden[i] = set()
-                self.forbidden[i].add(c); self.known.add(c)
-            else:
-                if c not in self.known: self.max_c[c] = 0
+            if p in ("G", "Y"):
+                counts[c] += 1
+
+        for c, count in counts.items():
+            self.min_c[c] = max(self.min_c.get(c, 0), count)
+            self.known.add(c)
+
+        for i, (p, c) in enumerate(zip(pattern, guess)):
+            if p == "G":
+                self.fixed[i] = c
+            elif p == "Y":
                 if i not in self.forbidden: self.forbidden[i] = set()
                 self.forbidden[i].add(c)
+            else:
+                if i not in self.forbidden: self.forbidden[i] = set()
+                self.forbidden[i].add(c)
+                if c in counts:
+                    self.max_c[c] = counts[c]
+                else:
+                    self.max_c[c] = 0
         self.candidates = [w for w in self.candidates if self.is_valid(w)]
+
     def is_valid(self, w):
         for i, c in self.fixed.items():
             if w[i] != c: return False
@@ -142,8 +157,8 @@ class Solver:
         return True
 
 class Game:
-    def __init__(self, chat_id, length=5, target=1, command="/new"):
-        self.chat_id, self.length = chat_id, length
+    def __init__(self, chat_id, phone, length=5, target=1, command="/new"):
+        self.chat_id, self.phone, self.length = chat_id, phone, length
         self.solver = Solver(length)
         self.active, self.target, self.done = True, target, 0
         self.command = command
@@ -186,54 +201,60 @@ def get_hub_buttons():
 
 @bot.on(events.NewMessage(pattern=r'(?i)^/start$'))
 async def on_start(e):
-    if not clients:
-        await e.reply("✨ **WORDLE SOLVER ELITE**\n\nClick below to login.", 
-                     buttons=[[Button.inline("🔑 Login", data="login_init"), Button.inline("ℹ️ Help", data="pg_help")]])
-    else:
-        await e.reply(get_hub_msg(), buttons=get_hub_buttons())
+    await e.reply(get_hub_msg(), buttons=get_hub_buttons())
 
 @bot.on(events.CallbackQuery(data="pg_accounts"))
 async def on_pg_accounts(e):
     if not clients:
         return await e.edit("No active sessions.", buttons=[[Button.inline("➕ Add Account", data="login_init")], [Button.inline("⬅️ Back", data="start_back")]])
-    
+
     msg = f"◈◈◈ ACTIVE ACCOUNTS ◈◈◈\n\nSelect an account to manage settings.\n\n"
     btns = []
     for i, phone in enumerate(clients.keys(), 1):
         msg += f"{i}. +{phone}\n"
         btns.append([Button.inline(f"» +{phone}", data=f"acc_{phone}")])
-    
+
     btns.append([Button.inline("➕ Add Account", data="login_init")])
     btns.append([Button.inline("⬅️ Back", data="start_back")])
     await e.edit(msg, buttons=btns)
 
-@bot.on(events.CallbackQuery(data=re.compile(b'acc_(\d+)')))
+@bot.on(events.CallbackQuery(data=re.compile(rb'acc_(\d+)')))
 async def on_pg_acc_details(e):
     phone = e.data.decode().split('_')[1]
     data = get_saved_sessions().get(phone, {})
     mode = data.get("mode", "TURBO")
-    
+    enabled = data.get("enabled", True)
+
     msg = f"""◈ SETTINGS: +{phone} ◈
 
 Manage the behavior of this specific userbot.
 
 » STATUS: ONLINE 🟢
+» BOT: {'ENABLED ✅' if enabled else 'DISABLED ❌'}
 » MODE: {mode}
-» SPEED: {'Fast' if mode == 'TURBO' else 'Safe'}
-» CLEANUP: ON"""
-    
+» SPEED: {'Fast' if mode == 'TURBO' else 'Safe'}"""
+
     await e.edit(msg, buttons=[
+        [Button.inline(f"{'🔴 Disable' if enabled else '🟢 Enable'} Bot", data=f"toggle_{phone}")],
         [Button.inline(f"🔄 Switch to {'STRENGTH' if mode == 'TURBO' else 'TURBO'}", data=f"mode_{phone}")],
         [Button.inline("🔒 Blacklist", data=f"bl_{phone}"), Button.inline("🚪 Logout", data=f"out_{phone}")],
         [Button.inline("⬅️ Back to Accounts", data="pg_accounts")]
     ])
 
-@bot.on(events.CallbackQuery(data=re.compile(b'mode_(\d+)')))
+@bot.on(events.CallbackQuery(data=re.compile(rb'toggle_(\d+)')))
+async def on_bot_toggle_cb(e):
+    phone = e.data.decode().split('_')[1]
+    data = get_saved_sessions().get(phone, {})
+    new_status = not data.get("enabled", True)
+    save_session(phone, data['string'], data.get("mode", "TURBO"), new_status)
+    await on_pg_acc_details(e)
+
+@bot.on(events.CallbackQuery(data=re.compile(rb'mode_(\d+)')))
 async def on_mode_toggle(e):
     phone = e.data.decode().split('_')[1]
     data = get_saved_sessions().get(phone, {})
     new_mode = "STRENGTH" if data.get("mode") == "TURBO" else "TURBO"
-    save_session(phone, data['string'], new_mode)
+    save_session(phone, data['string'], new_mode, data.get("enabled", True))
     await on_pg_acc_details(e)
 
 @bot.on(events.CallbackQuery(data="pg_stats"))
@@ -266,13 +287,9 @@ Automatic detection for mid-game boards is enabled."""
 
 @bot.on(events.CallbackQuery(data="start_back"))
 async def on_back_start(e):
-    if not clients:
-        await e.edit("✨ **WORDLE SOLVER ELITE**\n\nClick below to login.", 
-                     buttons=[[Button.inline("🔑 Login", data="login_init"), Button.inline("ℹ️ Help", data="pg_help")]])
-    else:
-        await e.edit(get_hub_msg(), buttons=get_hub_buttons())
+    await e.edit(get_hub_msg(), buttons=get_hub_buttons())
 
-@bot.on(events.CallbackQuery(data=re.compile(b'bl_(\d+)')))
+@bot.on(events.CallbackQuery(data=re.compile(rb'bl_(\d+)')))
 async def on_bl_init(e):
     phone = e.data.decode().split('_')[1]
     LOGIN_DATA[e.chat_id] = {'step': 'blacklist', 'phone': phone}
@@ -282,7 +299,8 @@ Send the Group ID you wish to toggle.
 » INFO: Use @idbot to find IDs."""
     await e.edit(msg, buttons=[Button.inline("⬅️ Back", data=f"acc_{phone}")])
 
-@bot.on(events.CallbackQuery(data=re.compile(b'out_(\d+)')))
+@bot.on(events.CallbackQuery(data=re.compile(rb'out_(\d+)')))
+
 async def on_logout(e):
     phone = e.data.decode().split('_')[1]
     if phone in clients:
@@ -326,16 +344,16 @@ async def do_sign_in(e, cid, code):
             await data['temp'].sign_in(data['phone'], code, phone_code_hash=data['hash'])
         else:
             await data['temp'].sign_in(password=code)
-        
+
         me = await data['temp'].get_me()
         ss = data['temp'].session.save()
         save_session(me.phone, ss)
-        
+
         new_client = TelegramClient(StringSession(ss), API_ID, API_HASH)
-        reg_handlers(new_client)
+        reg_handlers(new_client, me.phone)
         await new_client.start()
         clients[str(me.phone)] = new_client
-        
+
         msg = f"✅ **LOGGED IN:** `{me.first_name}` (+{me.phone})"
         if isinstance(e, events.CallbackQuery.Event): await e.edit(msg, buttons=None)
         else: await e.reply(msg)
@@ -386,21 +404,23 @@ async def on_msg(e):
 # ==========================
 # 🎮 USERBOT HANDLERS
 # ==========================
-def reg_handlers(c):
-    c.add_event_handler(h_ping, events.NewMessage(pattern=r'(?i)^[./]?ping$'))
-    c.add_event_handler(h_new, events.NewMessage(pattern=r'(?i)^[./]?new(4|6)?(?:\s+(\d+))?'))
-    c.add_event_handler(h_stop, events.NewMessage(pattern=r'(?i)^[./]?stop$'))
-    c.add_event_handler(h_game, events.NewMessage)
+def reg_handlers(c, phone):
+    c.add_event_handler(lambda e: h_ping(e, phone), events.NewMessage(pattern=r'(?i)^[./]?ping$'))
+    c.add_event_handler(lambda e: h_new(e, phone), events.NewMessage(pattern=r'(?i)^[./]?new(4|6)?(?:\s+(\d+))?'))
+    c.add_event_handler(lambda e: h_stop(e, phone), events.NewMessage(pattern=r'(?i)^[./]?stop$'))
+    c.add_event_handler(lambda e: h_game(e, phone), events.NewMessage)
 
-async def h_ping(e):
-    if not BOT_ON: return
+async def h_ping(e, phone):
+    data = get_saved_sessions().get(str(phone), {})
+    if not data.get("enabled", True): return
     start = time.time()
     msg = await e.reply("🏓 **PONG**")
     end = time.time()
     await msg.edit(f"🏓 **PONG**\n» **LATENCY:** `{(end - start) * 1000:.0f}ms`")
 
-async def h_new(e):
-    if not BOT_ON: return
+async def h_new(e, phone):
+    data = get_saved_sessions().get(str(phone), {})
+    if not data.get("enabled", True): return
     if is_blacklisted(e.chat_id): return
     m = re.match(r'(?i)^[./]?new(4|6)?(?:\s+(\d+))?', e.raw_text)
     if not m: return
@@ -409,37 +429,58 @@ async def h_new(e):
     n_str = m.group(2)
     if not n_str and e.chat_id in game_sessions:
         s = game_sessions[e.chat_id]
-        if s.active and s.target > 1 and s.done < s.target:
+        if s.active and s.target > 1 and s.done < s.target and s.length == l:
             async with s.lock:
                 s.solver.reset(); s.processed.clear(); s.last_msg = None
                 g = s.solver.get_guess(); s.last_guess = g; s.last_action = time.time()
                 await asyncio.sleep(2); await e.client.send_message(e.chat_id, g.lower()); return
     n = int(n_str or 1)
     base_cmd = f"/new{m.group(1) or ''}"
-    s = game_sessions[e.chat_id] = Game(e.chat_id, l, target=n, command=base_cmd)
+    s = game_sessions[e.chat_id] = Game(e.chat_id, phone, l, target=n, command=base_cmd)
     g = s.solver.get_guess(); s.last_guess = g; s.last_action = time.time()
     await asyncio.sleep(2); await e.client.send_message(e.chat_id, g.lower())
 
-async def h_stop(e):
-    if e.chat_id in game_sessions: game_sessions[e.chat_id].active = False; await e.reply("🛑 Stopped.")
+async def h_stop(e, phone):
+    me = await e.client.get_me()
+    if e.sender_id != me.id: return
+    if e.chat_id in game_sessions: 
+        game_sessions[e.chat_id].active = False
+        await e.reply("🛑 Stopped.")
 
-async def h_game(e):
-    if not BOT_ON or e.chat_id not in game_sessions: return
+async def h_game(e, phone):
+    data = get_saved_sessions().get(str(phone), {})
+    if not data.get("enabled", True): return
+    if e.chat_id not in game_sessions: return
     if is_blacklisted(e.chat_id): return
     s = game_sessions[e.chat_id]
     if not s.active: return
     t = e.raw_text.lower()
     async with s.lock:
         if not s.active: return
+
+        is_game_over = "congrats" in t or "correct" in t or "🟩" * s.length in e.raw_text
+        is_game_start = "game started" in t or "guess the" in t
+        has_emojis = any(c in e.raw_text for c in "🟩🟨🟥⬛⬜")
+
+        if is_game_start:
+            s.solver.reset(); s.processed.clear(); s.last_msg = None
+            g = s.solver.get_guess()
+            if g:
+                s.last_guess = g; s.last_action = time.time()
+                await asyncio.sleep(2); await e.client.send_message(e.chat_id, g.lower())
+            return
+
         if "already guessed" in t or "someone has already guessed" in t:
             if time.time() - s.last_action < 1.5: return
             if s.last_guess and s.last_guess in s.solver.candidates: s.solver.candidates.remove(s.last_guess)
             g = s.solver.get_guess()
             if g: s.last_guess = g; s.last_action = time.time(); await asyncio.sleep(2)
             if s.active: await e.client.send_message(e.chat_id, g.lower()); return
-        if not any(c in e.raw_text for c in "🟩🟨🟥⬛⬜"): return
+
+        if not has_emojis and not is_game_over: return
         if e.raw_text == s.last_msg: return
         s.last_msg = e.raw_text
+
         lines = e.raw_text.splitlines()
         new_info = False
         for line in lines:
@@ -450,39 +491,9 @@ async def h_game(e):
                 if len(word) == s.length:
                     key = f"{word}-{p}"
                     if key not in s.processed: s.solver.process(word, p); s.processed.add(key); new_info = True
-        if "Congrats" in e.raw_text or "correct" in e.raw_text.lower() or "🟩" * s.length in e.raw_text:
+
+        if is_game_over:
             s.done += 1; s.last_action = time.time()
             if s.done < s.target:
-                s.solver.reset(); s.processed.clear(); s.last_msg = None; await asyncio.sleep(3)
-                if s.active: await e.client.send_message(e.chat_id, s.command)
-            else: s.active = False; await e.reply(f"🏆 **SOLVED {s.done} GAMES!**")
-            return
-        if new_info:
-            if time.time() - s.last_action < 1.5: return
-            g = s.solver.get_guess()
-            if g: s.last_guess = g; s.last_action = time.time(); await asyncio.sleep(2)
-            if s.active: await e.client.send_message(e.chat_id, g.lower())
-
-app = Flask(__name__)
-@app.route('/')
-def home(): return "Online"
-
-async def main():
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=5000), daemon=True).start()
-    await bot.start(bot_token=BOT_TOKEN)
-    
-    saved_sessions = get_saved_sessions()
-    for phone, s_data in saved_sessions.items():
-        try:
-            new_client = TelegramClient(StringSession(s_data['string']), API_ID, API_HASH)
-            reg_handlers(new_client)
-            await new_client.start()
-            clients[str(phone)] = new_client
-            print(f"🚀 Loaded +{phone}")
-        except Exception as e: print(f"⚠️ Failed to load +{phone}: {e}")
-    
-    print("✨ Bot is running."); await bot.run_until_disconnected()
-
-if __name__ == "__main__":
-    try: asyncio.run(main())
-    except KeyboardInterrupt: print("🛑 Stopped by user.")
+                await asyncio.sleep(3)
+                if s.active: await e.clie
