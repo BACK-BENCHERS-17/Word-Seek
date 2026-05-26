@@ -17,13 +17,41 @@ from pymongo import MongoClient
 import dns.resolver
 import certifi
 
-# Fix for Termux/Android DNS (only if in Termux)
-if os.path.exists('/data/data/com.termux'):
+# Fix DNS resolution (works on Railway, Termux, and other platforms)
+try:
+    dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
+    dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1']
+    dns.resolver.default_resolver.timeout = 10
+    dns.resolver.default_resolver.lifetime = 10
+except Exception as e:
+    print(f"⚠️ DNS config failed: {e}")
+
+def resolve_mongo_srv(url):
+    """Fallback resolver for MongoDB SRV using DNS-over-HTTPS."""
+    if not url.startswith("mongodb+srv://"): return url
     try:
-        dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
-        dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4']
+        import requests
+        parts = url.replace("mongodb+srv://", "").split("@")
+        auth = parts[0]
+        domain = parts[1].split("/")[0].split("?")[0]
+        print(f"🌐 Resolving {domain} via DoH...")
+        res = requests.get(f"https://dns.google/resolve?name=_mongodb._tcp.{domain}&type=SRV", timeout=10).json()
+        hosts = []
+        for ans in res.get("Answer", []):
+            h_parts = ans["data"].split()
+            hosts.append(f"{h_parts[3].rstrip('.')}:{h_parts[2]}")
+        if not hosts: return url
+        res_txt = requests.get(f"https://dns.google/resolve?name={domain}&type=TXT", timeout=10).json()
+        options = ""
+        for ans in res_txt.get("Answer", []):
+            options = ans["data"].strip('"')
+            break
+        new_url = f"mongodb://{auth}@{','.join(hosts)}/?{options}&tls=true"
+        print("🔗 Direct Mongo URL constructed.")
+        return new_url
     except Exception as e:
-        print(f"⚠️ DNS fix failed: {e}")
+        print(f"⚠️ DoH Resolution failed: {e}")
+        return url
 
 # ==========================
 # 📝 CONFIG
@@ -32,12 +60,35 @@ SESSION_FILE = "sessions.json"
 API_ID = 33679425
 API_HASH = "317cec181636ecdbb76c6d43a2d5935d"
 BOT_TOKEN = "8181377432:AAGCMxdbGAo5zX1nxcG00pQO9Qcep5ywt4c"
-MONGO_URL = "mongodb+srv://bb:bb@cluster0.upxxpnl.mongodb.net/?appName=Cluster0"
+MONGO_URL = "mongodb+srv://bb:bb@cluster0.mgt8jov.mongodb.net/?appName=Cluster0"
 
-mongo_client = MongoClient(MONGO_URL, tlsCAFile=certifi.where(), tlsAllowInvalidCertificates=True)
-db = mongo_client['wordle_solver']
-sessions_col = db['sessions']
-blacklist_col = db['blacklist']
+# Resolve SRV to direct URL to avoid DNS issues in container environments
+if MONGO_URL.startswith("mongodb+srv://"):
+    resolved = resolve_mongo_srv(MONGO_URL)
+    if resolved != MONGO_URL:
+        print(f"✅ SRV resolved to direct connection string")
+        MONGO_URL = resolved
+
+try:
+    print("🔌 Connecting to MongoDB...")
+    mongo_client = MongoClient(MONGO_URL, tlsCAFile=certifi.where(), tlsAllowInvalidCertificates=True, serverSelectionTimeoutMS=5000)
+    mongo_client.admin.command('ping')
+    db = mongo_client['wordle_solver']
+    sessions_col = db['sessions']
+    blacklist_col = db['blacklist']
+    print("✅ MongoDB connected.")
+except Exception as e:
+    print(f"❌ MongoDB Connection Error: {e}")
+    print("⚠️ Bot will run with limited functionality (Local Storage Only).")
+    class DummyCol:
+        is_dummy = True
+        def find(self, *args, **kwargs): return []
+        def find_one(self, *args, **kwargs): return None
+        def insert_one(self, *args, **kwargs): pass
+        def update_one(self, *args, **kwargs): pass
+        def delete_one(self, *args, **kwargs): pass
+    sessions_col = DummyCol()
+    blacklist_col = DummyCol()
 
 def is_blacklisted(chat_id):
     return blacklist_col.find_one({"chat_id": chat_id}) is not None
@@ -51,44 +102,63 @@ def toggle_blacklist(chat_id):
         return True
 
 MATH_MAP = {
-    '𝐀': 'A', '𝐁': 'B', '𝐂': 'C', '𝐃': 'D', '𝐄': 'E', '𝐅': 'F', '𝐆': 'G', '𝐇': 'H', '𝐈': 'I', '𝐉': 'J', '𝐊': 'K', '𝐋': 'L', '𝐌': 'M', '𝐍': 'N', '𝐎': 'O', '𝐏': 'P', '𝗐': 'W', '𝐗': 'X', '𝐘': 'Y', '𝐙': 'Z',
-    '𝐚': 'A', '𝐛': 'B', '𝐜': 'C', '𝐝': 'D', '𝐞': 'E', '𝐟': 'F', '𝐠': 'G', '𝐡': 'H', '𝐢': 'I', '𝐣': 'J', '𝐤': 'K', '𝐥': 'L', '𝐦': 'M', '𝐧': 'N', '𝐨': 'O', '𝐩': 'P', '𝐪': 'Q', '𝐫': 'R', '𝐬': 'S', '𝐭': 'T', '𝐮': 'U', '𝐯': 'V', '𝐰': 'W', 'ｘ': 'X', 'ｙ': 'Y', 'ｚ': 'Z',
+    '𝐀': 'A', '𝐁': 'B', '𝐂': 'C', '𝐃': 'D', '𝐄': 'E', '𝐅': 'F', '𝐆': 'G', '𝐇': 'H', '𝐈': 'I', '𝐉': 'J', '𝐊': 'K', '𝐋': 'L', '𝐌': 'M', '𝐍': 'N', '𝐎': 'O', '𝐏': 'P', '𝐐': 'Q', '𝐑': 'R', '𝐒': 'S', '𝐓': 'T', '𝐔': 'U', '𝐕': 'V', '𝐖': 'W', '𝐗': 'X', '𝐘': 'Y', '𝐙': 'Z',
+    '𝐚': 'A', '𝐛': 'B', '𝐜': 'C', '𝐝': 'D', '𝐞': 'E', '𝐟': 'F', '𝐠': 'G', '𝐡': 'H', '𝐢': 'I', '𝐣': 'J', '𝐤': 'K', '𝐥': 'L', '𝐦': 'M', '𝐧': 'N', '𝐨': 'O', '𝐩': 'P', '𝐪': 'Q', '𝐫': 'R', '𝐬': 'S', '𝐭': 'T', '𝐮': 'U', '𝐯': 'V', '𝐰': 'W', '𝐱': 'X', '𝐲': 'Y', '𝐳': 'Z',
     '𝗔': 'A', '𝗕': 'B', '𝗖': 'C', '𝗗': 'D', '𝗘': 'E', '𝗙': 'F', '𝗚': 'G', '𝗛': 'H', '𝗜': 'I', '𝗝': 'J', '𝗞': 'K', '𝗟': 'L', '𝗠': 'M', '𝗡': 'N', '𝗢': 'O', '𝗣': 'P', '𝗤': 'Q', '𝗥': 'R', '𝗦': 'S', '𝗧': 'T', '𝗨': 'U', '𝗩': 'V', '𝗪': 'W', '𝗫': 'X', '𝗬': 'Y', '𝗭': 'Z',
-    '𝗮': 'A', '𝗯': 'B', '𝗰': 'C', '𝗱': 'D', '𝗲': 'E', '𝗳': 'F', '𝗴': 'G', '𝗵': 'H', '𝗶': 'I', '𝗷': 'J', 'ｋ': 'K', 'ｌ': 'L', 'ｍ': 'M', 'ｎ': 'N', '𝗼': 'O', '𝐩': 'P', '𝗾': 'Q', '𝗿': 'R', 'ｓ': 'S', 'ｔ': 'T', 'ｕ': 'U', 'ｖ': 'V', 'ｗ': 'W', 'ｘ': 'X', 'ｙ': 'Y', 'ｚ': 'Z',
+    '𝗮': 'A', '𝗯': 'B', '𝗰': 'C', '𝗱': 'D', '𝗲': 'E', '𝗳': 'F', '𝗴': 'G', '𝗵': 'H', '𝗶': 'I', '𝗷': 'J', '𝗸': 'K', 'ｌ': 'L', 'ｍ': 'M', 'ｎ': 'N', '𝗼': 'O', '𝗽': 'P', '𝗾': 'Q', '𝗿': 'R', 'ｓ': 'S', 'ｔ': 'T', 'ｕ': 'U', 'ｖ': 'V', 'ｗ': 'W', '𝘅': 'X', '𝘆': 'Y', '𝘇': 'Z',
+    '𝘈': 'A', '𝘉': 'B', '𝘊': 'C', '𝘋': 'D', '𝘌': 'E', '𝘍': 'F', '𝘎': 'G', '𝘏': 'H', '𝘐': 'I', '𝘑': 'J', '𝘒': 'K', '𝘓': 'L', '𝘔': 'M', '𝘕': 'N', '𝘖': 'O', '𝘗': 'P', '𝘘': 'Q', '𝘙': 'R', '𝘚': 'S', '𝘛': 'T', '𝘜': 'U', '𝘝': 'V', '𝘞': 'W', '𝘟': 'X', '𝘠': 'Y', '𝘡': 'Z',
+    '𝘢': 'A', '𝘣': 'B', '𝘤': 'C', '𝘥': 'D', '𝘦': 'E', '𝘧': 'F', '𝘨': 'G', '𝘩': 'H', '𝘪': 'I', '𝘫': 'J', '𝘬': 'K', '𝘭': 'L', '𝘮': 'M', '𝘯': 'N', '𝘰': 'O', '𝘱': 'P', '𝘲': 'Q', '𝘳': 'R', '𝘴': 'S', '𝘵': 'T', '𝘶': 'U', '𝘷': 'V', '𝘸': 'W', '𝘹': 'X', '𝘺': 'Y', '𝘻': 'Z',
 }
 
 def clean_text(text):
     return "".join(MATH_MAP.get(c, c) for c in text).upper()
 
 def get_saved_sessions():
+    """Returns a merged dict of sessions from DB and Local File."""
+    merged = {}
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r") as f: merged = json.load(f)
+        except: pass
     try:
-        saved = list(sessions_col.find())
-        if saved: return {s['phone']: s for s in saved}
+        if not hasattr(sessions_col, 'is_dummy'):
+            for s in sessions_col.find():
+                ph = str(s.get('phone'))
+                if ph:
+                    merged[ph] = {**merged.get(ph, {}), **s}
+                    if '_id' in merged[ph]: del merged[ph]['_id']
+    except: pass
+    return merged
+
+def save_session(phone, session_string, mode="TURBO", enabled=True, owner_id=None):
+    phone = str(phone)
+    update_fields = {"phone": phone, "string": session_string, "mode": mode, "enabled": enabled}
+    if owner_id: update_fields["owner_id"] = owner_id
+    try:
+        if not hasattr(sessions_col, 'is_dummy'):
+            sessions_col.update_one({"phone": phone}, {"$set": update_fields}, upsert=True)
+    except: pass
+    data = {}
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r") as f: data = json.load(f)
+        except: pass
+    data[phone] = {**data.get(phone, {}), **update_fields}
+    with open(SESSION_FILE, "w") as f: json.dump(data, f, indent=4)
+
+def delete_session(phone):
+    phone = str(phone)
+    try:
+        if not hasattr(sessions_col, 'is_dummy'):
+            sessions_col.delete_one({"phone": phone})
     except: pass
     if os.path.exists(SESSION_FILE):
         try:
-            with open(SESSION_FILE, "r") as f: return json.load(f)
-        except: return {}
-    return {}
-
-def save_session(phone, session_string, mode="TURBO", enabled=True, owner_id=None):
-    update_fields = {"string": session_string, "mode": mode, "enabled": enabled}
-    if owner_id: update_fields["owner_id"] = owner_id
-    
-    try:
-        sessions_col.update_one({"phone": phone}, {"$set": update_fields}, upsert=True)
-    except: pass
-    
-    data = get_saved_sessions()
-    data[phone] = {**data.get(phone, {}), "phone": phone, **update_fields}
-    with open(SESSION_FILE, "w") as f: json.dump(data, f)
-
-def delete_session(phone):
-    try: sessions_col.delete_one({"phone": phone})
-    except: pass
-    data = get_saved_sessions()
-    if phone in data: del data[phone]
-    with open(SESSION_FILE, "w") as f: json.dump(data, f)
+            with open(SESSION_FILE, "r") as f: data = json.load(f)
+            if phone in data:
+                del data[phone]
+                with open(SESSION_FILE, "w") as f: json.dump(data, f, indent=4)
+        except: pass
 
 bot = TelegramClient('manager', API_ID, API_HASH)
 clients = {}
@@ -121,9 +191,15 @@ class Solver:
     def get_guess(self):
         if not self.candidates: return None
         if self.count == 0:
-            starters = {4: ["DATE", "RARE"], 5: ["CRANE", "SLATE", "ADIEU"], 6: ["STREAK", "PLANET"]}
-            for s in starters.get(self.length, ["CRANE"]):
-                if s in self.candidates: return s
+            starters = {
+                4: ["DATE", "RARE", "TEAM", "WIND", "GOLD"], 
+                5: ["CRANE", "SLATE", "ADIEU", "ROAST", "CLINT"], 
+                6: ["STREAK", "PLANET", "MASTER", "DANGER", "PLAYER"]
+            }
+            possible = starters.get(self.length, ["CRANE"])
+            valid_starters = [s for s in possible if s in self.candidates]
+            if valid_starters:
+                return random.choice(valid_starters)
         if len(self.candidates) <= 2: return self.candidates[0]
         freq = Counter("".join(self.candidates))
         return max(self.candidates, key=lambda w: sum(freq[c] for c in set(w)))
@@ -517,24 +593,28 @@ async def h_stop(e, phone):
 async def h_game(e, phone):
     data = get_saved_sessions().get(str(phone), {})
     if not data.get("enabled", True): return
-    if e.chat_id not in game_sessions: return
     if is_blacklisted(e.chat_id): return
-    s = game_sessions[e.chat_id]
-    if not s.active: return
     
     t = e.raw_text.lower()
+    is_game_start = "game started" in t or "guess the" in t
+    has_emojis = any(c in e.raw_text for c in "🟩🟨🟥⬛⬜")
+    
+    # Auto-detection
+    if is_game_start and e.chat_id not in game_sessions:
+        m = re.search(r"(\d)-letter", t)
+        length = int(m.group(1)) if m else 5
+        game_sessions[e.chat_id] = Game(e.chat_id, phone, length)
+    
+    if e.chat_id not in game_sessions: return
+    s = game_sessions[e.chat_id]
+    
     new_info = False
     opponent_played = False
-    is_game_over = False
+    is_game_over = "congrats" in t or "correct" in t or "won the game" in t or "🟩" * s.length in e.raw_text or "the word was" in t
 
     async with s.lock:
-        if not s.active: return
-        
-        is_game_over = "congrats" in t or "correct" in t or "🟩" * s.length in e.raw_text
-        is_game_start = "game started" in t or "guess the" in t
-        has_emojis = any(c in e.raw_text for c in "🟩🟨🟥⬛⬜")
-
         if is_game_start:
+            s.active = True
             s.solver.reset()
             s.processed.clear()
             s.last_msg = None
@@ -543,19 +623,21 @@ async def h_game(e, phone):
             if g:
                 s.last_guess = g
                 s.last_action = time.time()
-                await asyncio.sleep(2)
+                await asyncio.sleep(random.uniform(1.0, 2.0))
                 await e.client.send_message(e.chat_id, g.lower())
             return
 
-        if "already guessed" in t or "someone has already guessed" in t:
-            if time.time() - s.last_action < 1.5: return
+        if not s.active and not has_emojis: return
+
+        if "already guessed" in t or "someone has already guessed" in t or "invalid word" in t:
+            if time.time() - s.last_action < 1.0: return
             if s.last_guess and s.last_guess in s.solver.candidates:
                 s.solver.candidates.remove(s.last_guess)
             g = s.solver.get_guess()
             if g and g != s.last_guess:
                 s.last_guess = g
                 s.last_action = time.time()
-                await asyncio.sleep(2)
+                await asyncio.sleep(1.0)
                 if s.active:
                     await e.client.send_message(e.chat_id, g.lower())
             return
@@ -580,25 +662,25 @@ async def h_game(e, phone):
                         if e.sender_id != me.id: opponent_played = True
 
         if is_game_over:
-            s.active = False # Immediately stop this round
+            s.active = False
             s.done += 1
             s.last_action = time.time()
             if s.done < s.target:
-                await asyncio.sleep(3)
-                # Restart for next round
+                await asyncio.sleep(2)
                 s.active = True
                 await e.client.send_message(e.chat_id, s.command)
-            else:
-                await e.reply(f"🏆 **SOLVED {s.done} GAMES!**")
             return
 
-    # Solving logic outside the primary lock to prevent event starvation
+    # Solving logic
     if new_info and s.active and not is_game_over and not s.is_solving:
-        if time.time() - s.last_action < 1.5: return
+        if time.time() - s.last_action < 0.8: return
         s.is_solving = True
         try:
-            delay = 2 if data.get("mode") == "TURBO" else 4
-            if opponent_played: delay += 3
+            # Both TURBO and STRENGTH are now fast
+            mode = data.get("mode", "TURBO")
+            delay = 0.5 if mode == "TURBO" else 1.0
+            if opponent_played: delay = 0.2 # Be faster if opponent played to secure win
+            
             await asyncio.sleep(delay)
             
             async with s.lock:
