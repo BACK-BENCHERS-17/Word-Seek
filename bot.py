@@ -59,7 +59,7 @@ def resolve_mongo_srv(url):
 SESSION_FILE = "sessions.json"
 API_ID = 33679425
 API_HASH = "317cec181636ecdbb76c6d43a2d5935d"
-BOT_TOKEN = "8181377432:AAGCMxdbGAo5zX1nxcG00pQO9Qcep5ywt4c"
+BOT_TOKEN = "8181377432:AAETtcMsxW2Tj9364jjPTctFj2_7o5rDLTY"
 MONGO_URL = "mongodb+srv://bb:bb@cluster0.mgt8jov.mongodb.net/?appName=Cluster0"
 
 # Resolve SRV to direct URL to avoid DNS issues in container environments
